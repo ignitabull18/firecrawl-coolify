@@ -1,0 +1,112 @@
+# docker-compose.yml
+version: '3.8'
+
+services:
+  # Build playwright service from FireCrawl source
+  playwright-service:
+    build:
+      context: https://github.com/mendableai/firecrawl.git#main
+      dockerfile: apps/playwright-service/Dockerfile
+    restart: unless-stopped
+    environment:
+      - PORT=3000
+      - PROXY_SERVER=${PROXY_SERVER}
+      - PROXY_USERNAME=${PROXY_USERNAME}
+      - PROXY_PASSWORD=${PROXY_PASSWORD}
+      - BLOCK_MEDIA=${BLOCK_MEDIA:-true}
+    networks:
+      - firecrawl-network
+
+  # Redis service
+  redis:
+    image: redis:alpine
+    restart: unless-stopped
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - firecrawl-network
+
+  # Build API from FireCrawl source
+  api:
+    build:
+      context: https://github.com/mendableai/firecrawl.git#main
+      dockerfile: apps/api/Dockerfile
+    restart: unless-stopped
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - REDIS_RATE_LIMIT_URL=redis://redis:6379
+      - PLAYWRIGHT_MICROSERVICE_URL=http://playwright-service:3000/scrape
+      - USE_DB_AUTHENTICATION=${USE_DB_AUTHENTICATION:-false}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - BULL_AUTH_KEY=${BULL_AUTH_KEY}
+      - TEST_API_KEY=${TEST_API_KEY}
+      - HOST=0.0.0.0
+      - PORT=3002
+      - NUM_WORKERS_PER_QUEUE=${NUM_WORKERS_PER_QUEUE:-8}
+      - LLAMAPARSE_API_KEY=${LLAMAPARSE_API_KEY}
+      - LOGTAIL_KEY=${LOGTAIL_KEY}
+      - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL}
+      - POSTHOG_API_KEY=${POSTHOG_API_KEY}
+      - POSTHOG_HOST=${POSTHOG_HOST}
+    depends_on:
+      - redis
+      - playwright-service
+    ports:
+      - "3002:3002"
+    networks:
+      - firecrawl-network
+    command: ["pnpm", "run", "start:production"]
+
+  # Build worker from FireCrawl source
+  worker:
+    build:
+      context: https://github.com/mendableai/firecrawl.git#main
+      dockerfile: apps/api/Dockerfile
+    restart: unless-stopped
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - REDIS_RATE_LIMIT_URL=redis://redis:6379
+      - PLAYWRIGHT_MICROSERVICE_URL=http://playwright-service:3000/scrape
+      - USE_DB_AUTHENTICATION=${USE_DB_AUTHENTICATION:-false}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - BULL_AUTH_KEY=${BULL_AUTH_KEY}
+      - TEST_API_KEY=${TEST_API_KEY}
+      - NUM_WORKERS_PER_QUEUE=${NUM_WORKERS_PER_QUEUE:-8}
+      - LLAMAPARSE_API_KEY=${LLAMAPARSE_API_KEY}
+      - LOGTAIL_KEY=${LOGTAIL_KEY}
+      - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL}
+      - POSTHOG_API_KEY=${POSTHOG_API_KEY}
+      - POSTHOG_HOST=${POSTHOG_HOST}
+    depends_on:
+      - redis
+      - playwright-service
+      - api
+    networks:
+      - firecrawl-network
+    command: ["pnpm", "run", "workers"]
+
+  # FireCrawler Community UI by sammcj
+  firecrawler-ui:
+    image: ghcr.io/sammcj/firecrawler:latest
+    restart: unless-stopped
+    ports:
+      - "3003:3000"
+    networks:
+      - firecrawl-network
+    environment:
+      - FIRECRAWL_API_URL=http://api:3002
+      - FIRECRAWL_API_KEY=${TEST_API_KEY}
+    depends_on:
+      - api
+
+volumes:
+  redis-data:
+
+networks:
+  firecrawl-network:
+    driver: bridge
